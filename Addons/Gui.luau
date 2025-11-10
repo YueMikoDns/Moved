@@ -10,28 +10,35 @@ local Settings = {
     CacheProperties = true
 }
 
--- Executor compatibility layer
+-- Compatibility layer for different executors
 local isfile = isfile or function() return false end
+local readfile = readfile or function() end
 local writefile = writefile or function() end
-local readfile = readfile or function() return "" end
 
--- Performance optimizations
+-- Performance optimizations: cache frequently used functions
 local spawn, wait = task.spawn, task.wait
-local tinsert, tfind, tremove, tclear = table.insert, table.find, table.remove, table.clear
-local format, sub, match, gsub = string.format, string.sub, string.match, string.gsub
-local floor, abs = math.floor, math.abs
+local tinsert, tfind, tremove = table.insert, table.find, table.remove
+local format, sub, match = string.format, string.sub, string.match
+local floor = math.floor
 
--- Property definitions with inheritance
+-- Constants
+local PROPERTIES_FILE = "robloxproperties.json"
+local API_URL = "https://raw.githubusercontent.com/MaximumADHD/Roblox-Client-Tracker/refs/heads/roblox/Mini-API-Dump.json"
+local MAX_PRECISION = 30
+
+--[[
+    Property Configuration
+    Defines which properties to extract for each GUI class
+]]
 local Properties = {
     GuiObject = {
-        "Position", "Size", "AnchorPoint", "AutomaticSize", "BackgroundColor3", 
-        "BackgroundTransparency", "BorderSizePixel", "LayoutOrder", "Visible", "ZIndex"
+        "Position", "Size", "AnchorPoint", "AutomaticSize"
     },
     UIListLayout = {
         "Padding", "SortOrder", "HorizontalAlignment", "FillDirection", "VerticalAlignment"
     },
     UISizeConstraint = {
-        "MaxSize", "MinSize"
+        "MaxSize"
     },
     UIAspectRatioConstraint = {
         "AspectRatio", "AspectType", "DominantAxis"
@@ -41,13 +48,10 @@ local Properties = {
     },
     UIStroke = {
         "ApplyStrokeMode", "Color", "Enabled", "LineJoinMode", "Thickness", "Transparency"
-    },
-    UIPadding = {
-        "PaddingBottom", "PaddingLeft", "PaddingRight", "PaddingTop"
     }
 }
 
--- Class inheritance mapping
+-- Inheritance mapping for GUI classes
 local ClassInheritance = {
     Frame = "GuiObject",
     TextLabel = "GuiObject",
@@ -55,61 +59,78 @@ local ClassInheritance = {
     TextBox = "GuiObject",
     ImageLabel = "GuiObject",
     ImageButton = "GuiObject",
-    ScrollingFrame = "GuiObject",
-    CanvasGroup = "GuiObject"
+    ScrollingFrame = "GuiObject"
 }
 
--- Load and parse API dump
-local function LoadAPIDump()
-    local jsonData = isfile('robloxproperties.json') and readfile('robloxproperties.json') 
-        or game:HttpGet("https://raw.githubusercontent.com/MaximumADHD/Roblox-Client-Tracker/refs/heads/roblox/Mini-API-Dump.json")
+--[[
+    Load and parse API dump
+]]
+local function LoadAPIData()
+    local jsonData = isfile(PROPERTIES_FILE) and readfile(PROPERTIES_FILE) 
+        or game:HttpGet(API_URL)
     
-    if not isfile("robloxproperties.json") then 
-        spawn(writefile, "robloxproperties.json", jsonData) 
+    if not isfile(PROPERTIES_FILE) then
+        spawn(writefile, PROPERTIES_FILE, jsonData)
     end
     
     return HttpService:JSONDecode(jsonData)
 end
 
-local JSON = LoadAPIDump()
-
--- Build property tables from API dump
-for _, Class in ipairs(JSON.Classes) do
-    if Class.MemoryCategory == "Gui" then
-        local className = Class.Name
-        local baseProperties = Properties[className] or Properties[ClassInheritance[className]]
-        Properties[className] = Properties[className] or (baseProperties and table.clone(baseProperties) or {})
-        
-        for _, Member in ipairs(Class.Members) do
-            local tags = Member.Tags or {}
-            if Member.MemberType == "Property" 
-                and not tfind(tags, "ReadOnly") 
-                and not tfind(tags, "Deprecated") 
-                and not tfind(tags, "Hidden") 
-                and not tfind(Properties[className], Member.Name) then
-                tinsert(Properties[className], Member.Name)
+--[[
+    Build property list from API dump
+]]
+local function BuildPropertyList()
+    local JSON = LoadAPIData()
+    
+    for _, Class in ipairs(JSON.Classes) do
+        if Class.MemoryCategory == "Gui" then
+            local className = Class.Name
+            
+            -- Initialize properties table, inheriting from parent class if exists
+            Properties[className] = Properties[className] 
+                or (Properties[ClassInheritance[className]] and table.clone(Properties[ClassInheritance[className]])) 
+                or {}
+            
+            for _, Member in ipairs(Class.Members) do
+                local tags = Member.Tags or {}
+                local isValidProperty = Member.MemberType == "Property" 
+                    and not tfind(tags, "ReadOnly")
+                    and not tfind(tags, "Deprecated") 
+                    and not tfind(tags, "Hidden")
+                    and not tfind(Properties[className], Member.Name)
+                
+                if isValidProperty then
+                    tinsert(Properties[className], Member.Name)
+                end
             end
         end
     end
 end
 
--- Identifier management
+BuildPropertyList()
+
+--[[
+    Identifier Management
+    Ensures unique names for all instances in the generated code
+]]
 local IdentifiersArray = {}
 local Identifiers = {}
 
 local function GetUniqueIdentifier(instance)
-    local identifier = Identifiers[instance]
-    if identifier then
-        return identifier
+    local cachedIdentifier = Identifiers[instance]
+    if cachedIdentifier then
+        return cachedIdentifier
     end
     
     local baseName = instance.Name
-    local dupeCount = 1
+    local counter = 1
+    local identifier = baseName
     
-    repeat
-        identifier = dupeCount == 1 and baseName or format("%s_%d", baseName, dupeCount)
-        dupeCount += 1
-    until not tfind(IdentifiersArray, identifier)
+    -- Find unique name by appending counter if needed
+    while tfind(IdentifiersArray, identifier) do
+        counter += 1
+        identifier = baseName .. " " .. counter
+    end
     
     tinsert(IdentifiersArray, identifier)
     Identifiers[instance] = identifier
@@ -117,194 +138,204 @@ local function GetUniqueIdentifier(instance)
     return identifier
 end
 
--- Number formatting with precision
+--[[
+    Format numbers with minimal precision
+]]
 local function FormatNumber(n)
-    -- Handle edge cases
-    if n == 0 then return "0" end
-    if abs(n) < 1e-10 then return "0" end
-    
-    -- Try to find minimum precision needed
-    for precision = 0, 10 do
+    -- Try different precision levels to find the shortest accurate representation
+    for precision = 0, MAX_PRECISION do
         local formatted = format("%." .. precision .. "f", n)
-        if tonumber(formatted) == n then
-            -- Remove leading zero for decimals < 1
-            if tonumber(match(formatted, "^(%-?%d+)%.")) == 0 then
-                formatted = gsub(formatted, "^0", "")
+        
+        if tonumber(formatted) == n or precision == MAX_PRECISION then
+            -- Remove leading zero if number is between -1 and 1
+            if tonumber(match(formatted, "(%d+)%.")) == 0 then
+                formatted = sub(formatted, 2)
             end
             return formatted
         end
     end
-    
-    return tostring(n)
 end
 
--- Value formatting with type handling
-local ValueFormatters = {
-    string = function(value)
-        return format('"%s"', gsub(gsub(value, '"', '\\"'), "\n", "\\n"))
-    end,
-    
-    Vector2 = function(value)
-        return format("Vector2.new(%s, %s)", FormatNumber(value.X), FormatNumber(value.Y))
-    end,
-    
-    UDim2 = function(value)
-        return format("UDim2.new(%s, %s, %s, %s)", 
-            FormatNumber(value.X.Scale), FormatNumber(value.X.Offset),
-            FormatNumber(value.Y.Scale), FormatNumber(value.Y.Offset))
-    end,
-    
-    UDim = function(value)
-        return format("UDim.new(%s, %s)", FormatNumber(value.Scale), FormatNumber(value.Offset))
-    end,
-    
-    Color3 = function(value)
-        return format("Color3.fromRGB(%d, %d, %d)", 
-            floor(value.R * 255 + 0.5), 
-            floor(value.G * 255 + 0.5), 
-            floor(value.B * 255 + 0.5))
-    end,
-    
-    Font = function(value)
-        return format("Font.new(%s, %s, %s)", 
-            ValueFormatters.string(value.Family), 
-            tostring(value.Weight), 
-            tostring(value.Style))
-    end,
-    
-    Rect = function(value)
-        return format("Rect.new(%s, %s, %s, %s)",
-            FormatNumber(value.Min.X), FormatNumber(value.Min.Y),
-            FormatNumber(value.Max.X), FormatNumber(value.Max.Y))
-    end,
-    
-    Instance = function(value)
-        if value == workspace then return "workspace" end
-        if value == game then return "game" end
-        
-        -- Build path from game root
-        local path = {}
-        local current = value
-        
-        while current and current ~= game do
-            tinsert(path, 1, current)
-            current = current.Parent
-        end
-        
-        if #path < 2 then return "nil" end
-        
-        local result = format('game:GetService("%s")', path[1].ClassName)
-        
-        for i = 2, #path do
-            result = format('%s:FindFirstChild("%s")', result, path[i].Name)
-        end
-        
-        -- Simplify common patterns
-        result = gsub(result, 'game:GetService%("Players"%):FindFirstChild%("' .. Player.Name .. '"%)', 
-            'game:GetService("Players").LocalPlayer')
-        result = gsub(result, 'game:GetService%("Workspace"%)', "workspace")
-        
-        return result
-    end
-}
-
+--[[
+    Format various Roblox data types as Lua code strings
+]]
 local function FormatValue(value)
     local valueType = typeof(value)
-    local formatter = ValueFormatters[valueType]
     
-    if formatter then
-        return formatter(value)
-    end
+    local formatters = {
+        ["string"] = function()
+            return format('"%s"', value:gsub('"', '\\"'):gsub("\n", "\\n"))
+        end,
+        
+        ["Vector2"] = function()
+            return format("Vector2.new(%s, %s)", 
+                FormatNumber(value.X), FormatNumber(value.Y))
+        end,
+        
+        ["UDim2"] = function()
+            local x, y = value.X, value.Y
+            return format("UDim2.new(%s, %s, %s, %s)", 
+                FormatNumber(x.Scale), FormatNumber(x.Offset), 
+                FormatNumber(y.Scale), FormatNumber(y.Offset))
+        end,
+        
+        ["UDim"] = function()
+            return format("UDim.new(%s, %s)", 
+                FormatNumber(value.Scale), FormatNumber(value.Offset))
+        end,
+        
+        ["Color3"] = function()
+            return format("Color3.fromRGB(%d, %d, %d)", 
+                floor(value.R * 255), floor(value.G * 255), floor(value.B * 255))
+        end,
+        
+        ["Font"] = function()
+            return format("Font.new(%s, %s, %s)", 
+                FormatValue(value.Family), FormatValue(value.Weight), FormatValue(value.Style))
+        end,
+        
+        ["Content"] = function()
+            return format("Content.fromUri(%s)", FormatValue(value.Uri))
+        end,
+        
+        ["Rect"] = function()
+            local min, max = value.Min, value.Max
+            return format("Rect.new(%s, %s, %s, %s)", 
+                FormatNumber(min.X), FormatNumber(min.Y), 
+                FormatNumber(max.X), FormatNumber(max.Y))
+        end,
+        
+        ["Instance"] = function()
+            if value == workspace then
+                return "workspace"
+            elseif value == game then
+                return "game"
+            end
+            
+            -- Build path from instance to game
+            local path = {}
+            local current = value
+            
+            while current and current ~= game do
+                tinsert(path, 1, current)
+                current = current.Parent
+            end
+            
+            if #path < 2 then
+                return "nil"
+            end
+            
+            -- Start with GetService for the service
+            local result = format('game:GetService("%s")', path[1].ClassName)
+            
+            -- Add FindFirstChild for descendants
+            for i = 2, #path do
+                result = result .. format(':FindFirstChild("%s")', path[i].Name)
+            end
+            
+            -- Optimize common patterns
+            result = result:gsub('game:GetService%("Players"%):FindFirstChild%("' .. Player.Name .. '"%)', 
+                'game:GetService("Players").LocalPlayer')
+            result = result:gsub('game:GetService%("Workspace"%)', "workspace")
+            
+            return result
+        end
+    }
     
-    return tostring(value)
+    -- Use specific formatter or fall back to tostring
+    return (formatters[valueType] or tostring)(value)
 end
 
--- Safe property access
-local function SafeGetProperty(instance, property)
+--[[
+    Safely attempt to get a property value
+]]
+local function TryGetProperty(instance, propertyName)
     local success, value = pcall(function()
-        return instance[property]
+        return instance[propertyName]
     end)
     return success, value
 end
 
--- Default instance cache
-local DefaultsCache = {}
-
-local function GetDefaultInstance(className)
-    if not DefaultsCache[className] then
-        DefaultsCache[className] = Instance.new(className)
-    end
-    return DefaultsCache[className]
-end
-
--- Main GUI stealing function
+--[[
+    Generate Lua code to recreate a GUI and its descendants
+]]
 local function StealGui(gui)
     local startTime = tick()
-    local tableName = "GuiTable"
+    local tableName = "instances"
     
-    local declarations = {}
-    local assignments = {}
+    local code = {}
+    local declarations = {format("local %s = {", tableName)}
     
-    tinsert(declarations, format("local %s = {", tableName))
+    -- Cache for default values to avoid repeated Instance.new calls
+    local defaultCache = {}
     
-    -- Get all instances
-    local instances = {gui}
+    -- Collect all instances
+    local allInstances = {gui}
     for _, descendant in ipairs(gui:GetDescendants()) do
-        tinsert(instances, descendant)
+        tinsert(allInstances, descendant)
     end
     
-    -- Process each instance
-    for index, instance in ipairs(instances) do
-        if Settings.NoCrash then wait() end
+    -- Generate instance declarations
+    for _, instance in ipairs(allInstances) do
+        if Settings.NoCrash then
+            wait()
+        end
         
-        local className = instance.ClassName
         local identifier = GetUniqueIdentifier(instance)
+        local className = instance.ClassName
         
-        -- Add to declarations table
         tinsert(declarations, format('\t["%s"] = Instance.new("%s"),', identifier, className))
+    end
+    
+    tinsert(declarations, "}\n")
+    
+    -- Generate property assignments
+    for index, instance in ipairs(allInstances) do
+        local identifier = GetUniqueIdentifier(instance)
+        local className = instance.ClassName
         
-        -- Get properties for this class
-        local classProperties = Properties[className] or {}
+        -- Get or create default instance for comparison
+        if not defaultCache[className] then
+            defaultCache[className] = Instance.new(className)
+        end
+        local defaultInstance = defaultCache[className]
         
-        -- Compare against default instance
-        local defaultInstance = GetDefaultInstance(className)
-        
-        for _, property in ipairs(classProperties) do
-            local success, value = SafeGetProperty(instance, property)
-            local successDefault, defaultValue = SafeGetProperty(defaultInstance, property)
+        -- Set non-default properties
+        local propertyList = Properties[className] or {}
+        for _, propertyName in ipairs(propertyList) do
+            local success, value = TryGetProperty(instance, propertyName)
+            local successDefault, defaultValue = TryGetProperty(defaultInstance, propertyName)
             
             if success and successDefault and value ~= defaultValue then
                 local formattedValue = typeof(value) == "Instance" 
                     and format('%s["%s"]', tableName, GetUniqueIdentifier(value))
                     or FormatValue(value)
                 
-                tinsert(assignments, format('%s["%s"].%s = %s', 
-                    tableName, identifier, property, formattedValue))
+                tinsert(code, format('%s["%s"].%s = %s', 
+                    tableName, identifier, propertyName, formattedValue))
             end
         end
         
-        -- Set Name property
-        tinsert(assignments, format('%s["%s"].Name = %s', 
+        -- Always set Name
+        tinsert(code, format('%s["%s"].Name = %s', 
             tableName, identifier, FormatValue(instance.Name)))
         
-        -- Set Parent property
+        -- Set Parent (special handling for root)
         if index == 1 then
-            tinsert(assignments, format('%s["%s"].Parent = %s', 
+            tinsert(code, format('%s["%s"].Parent = %s', 
                 tableName, identifier, FormatValue(gui.Parent)))
         else
-            tinsert(assignments, format('%s["%s"].Parent = %s["%s"]', 
+            tinsert(code, format('%s["%s"].Parent = %s["%s"]', 
                 tableName, identifier, tableName, GetUniqueIdentifier(instance.Parent)))
         end
         
-        tinsert(assignments, "")
+        tinsert(code, "") -- Empty line for readability
     end
     
-    tinsert(declarations, "}\n")
-    
-    local code = table.concat(declarations, "\n") .. "\n" .. table.concat(assignments, "\n")
+    local fullCode = table.concat(declarations, "\n") .. "\n" .. table.concat(code, "\n")
     local elapsedTime = tick() - startTime
     
-    return code, elapsedTime
+    return fullCode, elapsedTime
 end
 
 return StealGui
