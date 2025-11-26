@@ -1265,8 +1265,10 @@ local CreatingFunctions = {
 				end
 
 				--// Left Line
-
-				setrenderproperty(RenderObjects.LeftLine, "Visible", Settings.Enabled)
+                if RenderObjects.LeftLine then
+                    setrenderproperty(RenderObjects.LeftLine, "Visible", Settings.Enabled)
+                end
+			--	setrenderproperty(RenderObjects.LeftLine, "Visible", Settings.Enabled)
 
 				setrenderproperty(RenderObjects.LeftLine, "From", Vector2new(AxisX - (mathcos(mathrad(Rotation)) * GapSize), AxisY - (mathsin(mathrad(Rotation)) * GapSize)))
 				setrenderproperty(RenderObjects.LeftLine, "To", Vector2new(AxisX - (mathcos(mathrad(Rotation)) * (Size + GapSize)), AxisY - (mathsin(mathrad(Rotation)) * (Size + GapSize))))
