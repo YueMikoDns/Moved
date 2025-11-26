@@ -205,6 +205,10 @@ end
 
 --// Variables
 
+if not Drawingnew then
+	Drawingnew = Drawing.new
+end
+
 local Inf, Nan, Loaded, CrosshairParts = 1 / 0, 0 / 0, false, {
 	OutlineLeftLine = Drawingnew("Line"),
 	OutlineRightLine = Drawingnew("Line"),
@@ -1265,9 +1269,9 @@ local CreatingFunctions = {
 				end
 
 				--// Left Line
-                if RenderObjects.LeftLine then
-                    setrenderproperty(RenderObjects.LeftLine, "Visible", Settings.Enabled)
-                end
+        if RenderObjects.LeftLine then
+            setrenderproperty(RenderObjects.LeftLine, "Visible", Settings.Enabled)
+        end
 			--	setrenderproperty(RenderObjects.LeftLine, "Visible", Settings.Enabled)
 				-- r u fk serious
 				print(RenderObjects.LeftLine, RenderObjects.RightLine, RenderObjects.TopLine, RenderObjects.BottomLine)
