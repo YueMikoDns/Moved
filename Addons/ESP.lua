@@ -124,7 +124,14 @@ end
 
 --// Optimized functions / methods
 
-local Connect, Disconnect = __index(game, "DescendantAdded").Connect
+--local Connect, Disconnect = __index(game, "DescendantAdded").Connect
+local Connect = __index(game, "DescendantAdded").Connect
+
+local function Disconnect(conn)
+	if conn and conn.Disconnect then
+		conn:Disconnect()
+	end
+end
 
 --[=[
 local Degrade = (function()
